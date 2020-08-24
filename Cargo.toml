@@ -1,0 +1,19 @@
+[package]
+name = "snuffy"
+version = "0.1.0"
+authors = ["Alessandro Decina <alessandro.d@gmail.com>"]
+edition = "2018"
+
+[build-dependencies]
+cargo-bpf = { version = "^1.0.1", default-features = false, features = ["build"] }
+
+[dependencies]
+probes = { path = "./probes" }
+redbpf = {  version = "^1.0.1", features = ["load"] }
+tokio = { version = "0.2.4", features = ["rt-core", "io-driver", "macros", "signal", "time"] }
+futures = "0.3"
+getopts = "0.2"
+hexdump = "0.1"
+time = "0.2"
+toml = "0.5"
+anyhow = "1.0"
