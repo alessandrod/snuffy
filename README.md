@@ -6,24 +6,45 @@ Snuffy is a simple command line tool to dump the data sent and received by progr
 
 # Installation
 
+In order to use snuffy you need to install the headers for the running kernel and LLVM 10.
+
+To install them on ubuntu run:
+
+```sh
+sudo apt-get -y install build-essential zlib1g-dev \
+        llvm-10-dev libclang-10-dev linux-headers-$(uname -r)
+```
+
+On fedora run:
+```sh
+yum install clang llvm llvm-devel zlib-devel kernel-devel
+export LLVM_SYS_100_PREFIX=/usr
+```
+
+Finally install snuffy itself running:
+
 ```sh
 cargo install --git https://github.com/alessandrod/snuffy snuffy
 ```
 
+**NOTE**: if you installed rust in your home directory, the binary will be placed in `$HOME/.cargo/bin/snuffy`. If you use sudo to run snuffy, you'll have to use the full path.
+
 # Usage
+
+Snuffy uses the `bpf()` syscall, so you need to run it as root or a user with `CAP_SYS_ADMIN` privileges.
 
 ## With programs that link to OpenSSL dynamically
 
 To instruments commands that link to OpenSSL dynamically, run:
 
-```sh
-$ sudo snuffy --hex-dump --trace-connections --command [COMMAND]
+```
+# snuffy --hex-dump --trace-connections --command [COMMAND]
 ```
 
 For example to instrument curl:
 
-```sh
-$ sudo snuffy --hex-dump --trace-connections --command /usr/bin/curl # then in another terminal run: curl https://www.google.com
+```
+# snuffy --hex-dump --trace-connections --command /usr/bin/curl # then in another terminal run: curl --http1.1 https://www.google.com
 [6:05:19] Connected to 127.0.0.53:53
 [6:05:19] Resolved www.google.com to 216.58.199.68
 [6:05:19] Connected to www.google.com:443 (216.58.199.68:443)
@@ -47,7 +68,7 @@ If you omit the `--command` option, snuffy will intercept **all** the programs t
 
 ## With programs that link to OpenSSL statically
 
-If you want to instrument a program that links statically to OpenSSL and the symbols have been stripped, you need to provide a file containing the `.text` section offsets of `SSL_read`and `SSL_write`, eg:
+If you want to instrument a program that links statically to OpenSSL and the symbols have been stripped, you need to provide a file containing the `.text` section offsets of `SSL_read` and `SSL_write`, eg:
 
 ```toml
 # put this in offsets.toml
@@ -58,14 +79,14 @@ ssl_write = 0xDECAFBAD
 
 Then run:
 
-```sh
-sudo snuffy --hex-dump --trace-connections --command COMMAND --offsets offsets.toml
+```
+# snuffy --hex-dump --trace-connections --command COMMAND --offsets offsets.toml
 ```
 
 For example assuming `zoom-offsets.toml` contains the offsets for the zoom client:
 
-```sh
-$ sudo snuffy --hex-dump --trace-connections --command /opt/zoom/zoom --offsets zoom-offsets.toml # then start zoom
+```
+# snuffy --hex-dump --trace-connections --command /opt/zoom/zoom --offsets zoom-offsets.toml # then start zoom
 [4:56:18] Connected to 127.0.0.53:53
 [4:56:18] Resolved us04web.zoom.us to 3.235.69.6
 [4:56:18] Connected to us04web.zoom.us:443 (3.235.69.6:443)
