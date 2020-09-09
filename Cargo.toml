@@ -8,7 +8,7 @@ edition = "2018"
 cargo-bpf = { version = "^1.0.1", default-features = false, features = ["build"] }
 
 [dependencies]
-probes = { path = "./probes" }
+snuffy-probes = { path = "./snuffy-probes" }
 redbpf = {  version = "^1.0.1", features = ["load"] }
 tokio = { version = "0.2.4", features = ["rt-core", "io-driver", "macros", "signal", "time"] }
 futures = "0.3"

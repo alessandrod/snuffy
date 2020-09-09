@@ -6,7 +6,7 @@ use cargo_bpf_lib as cargo_bpf;
 fn main() {
     let cargo = PathBuf::from(env::var("CARGO").unwrap());
     let target = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let probes = Path::new("probes");
+    let probes = Path::new("snuffy-probes");
 
     cargo_bpf::build(
         &cargo,

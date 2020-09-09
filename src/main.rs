@@ -21,7 +21,7 @@ use tokio;
 use tokio::runtime::Runtime;
 use tokio::signal;
 
-use probes::snuffy::{AccessMode, Config, Connection, SSLBuffer, COMM_LEN, CONFIG_KEY, DNS};
+use snuffy_probes::snuffy::{AccessMode, Config, Connection, SSLBuffer, COMM_LEN, CONFIG_KEY, DNS};
 
 fn main() -> Result<(), anyhow::Error> {
     let opts = match parse_opts()? {

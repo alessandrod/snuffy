@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
-use probes::snuffy::{
+use snuffy_probes::snuffy::{
     AccessMode, Config, Connection, SSLBuffer, BUF_LEN, COMM_LEN, CONFIG_KEY, DNS, HOST_LEN,
 };
-use probes::user_bindings::addrinfo;
+use snuffy_probes::user_bindings::addrinfo;
 use redbpf_probes::helpers::gen;
 use redbpf_probes::uprobe::prelude::*;
 
