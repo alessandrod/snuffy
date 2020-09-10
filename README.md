@@ -3,6 +3,7 @@ snuffy
 
 Snuffy is a simple command line tool to dump the data sent and received by programs that use OpenSSL.
 
+For background info see the blog post https://confused.ai/posts/intercepting-zoom-tls-encryption-bpf-uprobes.
 
 # Installation
 
