@@ -13,7 +13,6 @@ use std::os::raw::c_char;
 use std::str::FromStr;
 use std::{cmp, fs, path::Path, ptr};
 
-use anyhow::anyhow;
 use futures::stream::StreamExt;
 use hexdump::hexdump_iter;
 use redbpf::{load::Loader, HashMap as BPFHashMap};
@@ -22,6 +21,7 @@ use time::OffsetDateTime;
 use tokio;
 use tokio::runtime::Runtime;
 use tokio::signal;
+use serde::Deserialize;
 
 use snuffy_probes::snuffy::{AccessMode, Config, Connection, SSLBuffer, COMM_LEN, CONFIG_KEY, DNS};
 
@@ -69,7 +69,7 @@ fn main() -> Result<(), anyhow::Error> {
                 }
                 "SSL_read" | "SSL_read_ret" => {
                     let (fn_name, offset, target) = match &opts.ssl_offsets {
-                        Some(off) => (None, off.read, opts.command.as_ref().unwrap().as_str()),
+                        Some(off) => (None, off.ssl_read, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_read"), 0, "libssl"),
                     };
                     uprobe
@@ -78,7 +78,7 @@ fn main() -> Result<(), anyhow::Error> {
                 }
                 "SSL_write" => {
                     let (fn_name, offset, target) = match &opts.ssl_offsets {
-                        Some(off) => (None, off.write, opts.command.as_ref().unwrap().as_str()),
+                        Some(off) => (None, off.ssl_write, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_write"), 0, "libssl"),
                     };
                     uprobe
@@ -214,21 +214,18 @@ impl Hosts {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 struct SSLOffsets {
-    read: u64,
-    write: u64,
+    ssl_read: u64,
+    ssl_write: u64,
 }
 
 impl FromStr for SSLOffsets {
     type Err = anyhow::Error;
 
     fn from_str(file: &str) -> Result<Self, Self::Err> {
-        let config = fs::read_to_string(file).map(|s| s.parse::<toml::Value>())??;
-        Ok(SSLOffsets {
-            read: offset_value(&config, "ssl_read")?,
-            write: offset_value(&config, "ssl_write")?,
-        })
+        let config = fs::read_to_string(file)?;
+        Ok(toml::from_str(&config)?)
     }
 }
 
@@ -250,15 +247,6 @@ struct Opts {
         parse(try_from_str)
     )]
     ssl_offsets: Option<SSLOffsets>,
-}
-
-fn offset_value(config: &toml::Value, key: &str) -> Result<u64, anyhow::Error> {
-    let offset = config
-        .get(key)
-        .ok_or_else(|| anyhow!("missing {} offset", key))?
-        .as_integer()
-        .ok_or_else(|| anyhow!("invalid {} offset", key));
-    offset.map(|o| o as u64)
 }
 
 fn now() -> String {
