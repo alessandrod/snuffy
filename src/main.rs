@@ -250,7 +250,7 @@ struct Opts {
 }
 
 fn now() -> String {
-    OffsetDateTime::now().format("[%T]")
+    OffsetDateTime::now_local().format("[%T]")
 }
 
 fn probe_code() -> &'static [u8] {
