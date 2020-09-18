@@ -13,15 +13,16 @@ use std::os::raw::c_char;
 use std::str::FromStr;
 use std::{cmp, fs, path::Path, ptr};
 
+use anyhow::{anyhow, Context};
 use futures::stream::StreamExt;
 use hexdump::hexdump_iter;
-use redbpf::{load::Loader, HashMap as BPFHashMap};
+use redbpf::{load::Loader, HashMap as BPFHashMap, UProbe};
+use serde::Deserialize;
 use structopt::StructOpt;
 use time::OffsetDateTime;
 use tokio;
 use tokio::runtime::Runtime;
 use tokio::signal;
-use serde::Deserialize;
 
 use snuffy_probes::snuffy::{AccessMode, Config, Connection, SSLBuffer, COMM_LEN, CONFIG_KEY, DNS};
 
@@ -30,8 +31,8 @@ fn main() -> Result<(), anyhow::Error> {
 
     let mut runtime = Runtime::new()?;
     let _ = runtime.block_on(async {
-        let mut loader = Loader::load(probe_code()).expect("error loading probe");
-
+        let mut loader =
+            Loader::load(probe_code()).map_err(|e| anyhow!("Error loading probes: {:?}", e))?;
         let config = BPFHashMap::<usize, Config>::new(loader.map("config").unwrap()).unwrap();
         let target_comm_set = opts.command.is_some();
         let mut target_comm = [0u8; COMM_LEN];
@@ -57,33 +58,30 @@ fn main() -> Result<(), anyhow::Error> {
         // attach the uprobes
         for uprobe in loader.uprobes_mut() {
             match uprobe.name().as_str() {
-                "getaddrinfo" | "getaddrinfo_ret" => {
-                    uprobe
-                        .attach_uprobe(Some("getaddrinfo"), 0, "libc", opts.pid)
-                        .expect(&format!("error attaching program getaddrinfo"));
-                }
+                "getaddrinfo" | "getaddrinfo_ret" => attach_uprobe(
+                    uprobe,
+                    "getaddrinfo",
+                    Some("getaddrinfo"),
+                    0,
+                    "libc",
+                    opts.pid,
+                )?,
                 n @ "connect" => {
-                    uprobe
-                        .attach_uprobe(Some(n), 0, "libpthread", opts.pid)
-                        .expect(&format!("error attaching program {}", n));
+                    attach_uprobe(uprobe, "connect", Some(n), 0, "libpthread", opts.pid)?
                 }
                 "SSL_read" | "SSL_read_ret" => {
                     let (fn_name, offset, target) = match &opts.ssl_offsets {
                         Some(off) => (None, off.ssl_read, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_read"), 0, "libssl"),
                     };
-                    uprobe
-                        .attach_uprobe(fn_name, offset, target, opts.pid)
-                        .expect(&format!("error attaching to SSL_read"));
+                    attach_uprobe(uprobe, "SSL_read", fn_name, offset, target, opts.pid)?
                 }
                 "SSL_write" => {
                     let (fn_name, offset, target) = match &opts.ssl_offsets {
                         Some(off) => (None, off.ssl_write, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_write"), 0, "libssl"),
                     };
-                    uprobe
-                        .attach_uprobe(fn_name, offset, &target, opts.pid)
-                        .expect(&format!("error attaching to SSL_write"));
+                    attach_uprobe(uprobe, "SSL_write", fn_name, offset, &target, opts.pid)?
                 }
                 _ => continue,
             }
@@ -157,8 +155,8 @@ fn main() -> Result<(), anyhow::Error> {
                 }
             }
         });
-        signal::ctrl_c().await
-    });
+        Ok::<(), anyhow::Error>(signal::ctrl_c().await?)
+    })?;
 
     Ok(())
 }
@@ -247,6 +245,19 @@ struct Opts {
         parse(try_from_str)
     )]
     ssl_offsets: Option<SSLOffsets>,
+}
+
+fn attach_uprobe(
+    uprobe: &mut UProbe,
+    name: &str,
+    fn_name: Option<&str>,
+    offset: u64,
+    target: &str,
+    pid: Option<i32>,
+) -> Result<(), anyhow::Error> {
+    uprobe
+        .attach_uprobe(fn_name, offset, target, pid)
+        .map_err(|e| anyhow!("error attaching to `{}`: {:?}", name, e))
 }
 
 fn now() -> String {
