@@ -4,18 +4,20 @@
 // http://apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT or
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
-use anyhow::anyhow;
-use futures::stream::StreamExt;
-use getopts::Options;
-use hexdump::hexdump_iter;
-use redbpf::{load::Loader, HashMap as BPFHashMap};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::CStr;
 use std::mem;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::os::raw::c_char;
+use std::str::FromStr;
 use std::{cmp, fs, path::Path, ptr};
+
+use anyhow::anyhow;
+use futures::stream::StreamExt;
+use hexdump::hexdump_iter;
+use redbpf::{load::Loader, HashMap as BPFHashMap};
+use structopt::StructOpt;
 use time::OffsetDateTime;
 use tokio;
 use tokio::runtime::Runtime;
@@ -24,10 +26,7 @@ use tokio::signal;
 use snuffy_probes::snuffy::{AccessMode, Config, Connection, SSLBuffer, COMM_LEN, CONFIG_KEY, DNS};
 
 fn main() -> Result<(), anyhow::Error> {
-    let opts = match parse_opts()? {
-        Some(opts) => opts,
-        None => return Ok(()),
-    };
+    let opts = Opts::from_args();
 
     let mut runtime = Runtime::new()?;
     let _ = runtime.block_on(async {
@@ -51,7 +50,7 @@ fn main() -> Result<(), anyhow::Error> {
             Config {
                 target_comm_set: target_comm_set as usize,
                 target_comm,
-                extract_fds: opts.trace_conns as usize,
+                extract_fds: opts.trace_connections as usize,
             },
         );
 
@@ -221,83 +220,36 @@ struct SSLOffsets {
     write: u64,
 }
 
-#[derive(Debug)]
-struct Opts {
-    pid: Option<i32>,
-    trace_conns: bool,
-    command: Option<String>,
-    hex_dump: bool,
-    ssl_offsets: Option<SSLOffsets>,
+impl FromStr for SSLOffsets {
+    type Err = anyhow::Error;
+
+    fn from_str(file: &str) -> Result<Self, Self::Err> {
+        let config = fs::read_to_string(file).map(|s| s.parse::<toml::Value>())??;
+        Ok(SSLOffsets {
+            read: offset_value(&config, "ssl_read")?,
+            write: offset_value(&config, "ssl_write")?,
+        })
+    }
 }
 
-fn parse_opts() -> Result<Option<Opts>, anyhow::Error> {
-    let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
-
-    let mut opts = Options::new();
-    opts.optflag("h", "help", "print this help menu");
-    opts.optopt("p", "PID", "the PID of the program to attach to", "PID");
-    opts.optflag(
-        "t",
-        "trace-connections",
-        "attempt to associate reads and writes to TCP connections",
-    );
-    opts.optflag("d", "hex-dump", "print an hex dump of the network data");
-    opts.optopt(
-        "c",
-        "command",
-        "the path to command to attach to. Required when providing custom offsets.",
-        "COMMAND",
-    );
-    opts.optopt(
-        "o",
-        "offsets",
-        "toml file including ssl_read and ssl_write keys with custom offsets.",
-        "offsets.toml",
-    );
-
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(f) => {
-            eprintln!("{}\n", f);
-            print_usage(&program, opts);
-            return Ok(None);
-        }
-    };
-
-    if matches.opt_present("h") || !matches.free.is_empty() {
-        print_usage(&program, opts);
-        return Ok(None);
-    }
-
-    if matches.opt_present("o") && !matches.opt_present("c") {
-        eprintln!("The option 'command' is required when providing custom offsets\n");
-        print_usage(&program, opts);
-        return Ok(None);
-    }
-
-    let ssl_offsets = match matches.opt_str("o") {
-        Some(file) => {
-            let config = fs::read_to_string(&file).map(|s| s.parse::<toml::Value>())??;
-            Some(SSLOffsets {
-                read: offset_value(&config, "ssl_read")?,
-                write: offset_value(&config, "ssl_write")?,
-            })
-        }
-        None => None,
-    };
-
-    let command = matches.opt_str("c");
-    let pid = matches.opt_str("p").map(|p| p.parse::<i32>().unwrap());
-    let trace_conns = matches.opt_present("t");
-    let hex_dump = matches.opt_present("d");
-    Ok(Some(Opts {
-        command,
-        pid,
-        trace_conns,
-        hex_dump,
-        ssl_offsets,
-    }))
+#[derive(Debug, StructOpt)]
+#[structopt(name = "snuffy", about = "Sniff TLS data")]
+struct Opts {
+    #[structopt(short = "p", long = "pid")]
+    pid: Option<i32>,
+    #[structopt(short = "t", long = "trace-connections")]
+    trace_connections: bool,
+    #[structopt(short = "c", long = "command")]
+    command: Option<String>,
+    #[structopt(short = "d", long = "hex-dump")]
+    hex_dump: bool,
+    #[structopt(
+        short = "o",
+        long = "offsets",
+        requires = "command",
+        parse(try_from_str)
+    )]
+    ssl_offsets: Option<SSLOffsets>,
 }
 
 fn offset_value(config: &toml::Value, key: &str) -> Result<u64, anyhow::Error> {
@@ -311,11 +263,6 @@ fn offset_value(config: &toml::Value, key: &str) -> Result<u64, anyhow::Error> {
 
 fn now() -> String {
     OffsetDateTime::now().format("[%T]")
-}
-
-fn print_usage(program: &str, opts: Options) {
-    let brief = format!("Usage: {} [options] [offsets.toml]", program);
-    print!("{}", opts.usage(&brief));
 }
 
 fn probe_code() -> &'static [u8] {

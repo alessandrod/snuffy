@@ -12,8 +12,8 @@ snuffy-probes = { path = "./snuffy-probes" }
 redbpf = {  version = "^1.0.1", features = ["load"] }
 tokio = { version = "0.2.4", features = ["rt-core", "io-driver", "macros", "signal", "time"] }
 futures = "0.3"
-getopts = "0.2"
 hexdump = "0.1"
 time = "0.2"
 toml = "0.5"
 anyhow = "1.0"
+structopt = "0.3.17"
