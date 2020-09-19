@@ -70,14 +70,14 @@ fn main() -> Result<(), anyhow::Error> {
                     attach_uprobe(uprobe, "connect", Some(n), 0, "libpthread", opts.pid)?
                 }
                 "SSL_read" | "SSL_read_ret" => {
-                    let (fn_name, offset, target) = match &opts.ssl_offsets {
+                    let (fn_name, offset, target) = match &opts.offsets {
                         Some(off) => (None, off.ssl_read, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_read"), 0, "libssl"),
                     };
                     attach_uprobe(uprobe, "SSL_read", fn_name, offset, target, opts.pid)?
                 }
                 "SSL_write" => {
-                    let (fn_name, offset, target) = match &opts.ssl_offsets {
+                    let (fn_name, offset, target) = match &opts.offsets {
                         Some(off) => (None, off.ssl_write, opts.command.as_ref().unwrap().as_str()),
                         None => (Some("SSL_write"), 0, "libssl"),
                     };
@@ -213,12 +213,12 @@ impl Hosts {
 }
 
 #[derive(Debug, Deserialize)]
-struct SSLOffsets {
+struct Offsets {
     ssl_read: u64,
     ssl_write: u64,
 }
 
-impl FromStr for SSLOffsets {
+impl FromStr for Offsets {
     type Err = anyhow::Error;
 
     fn from_str(file: &str) -> Result<Self, Self::Err> {
@@ -244,7 +244,7 @@ struct Opts {
         requires = "command",
         parse(try_from_str)
     )]
-    ssl_offsets: Option<SSLOffsets>,
+    offsets: Option<Offsets>,
 }
 
 fn attach_uprobe(
