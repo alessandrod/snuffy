@@ -26,9 +26,6 @@ static mut connection_events: PerfMap<Connection> = PerfMap::with_max_entries(10
 #[map("dns_hosts")]
 static mut dns_hosts: HashMap<u64, (u64, u64)> = HashMap::with_max_entries(1024);
 
-#[map("fd_connections")]
-static mut connections: HashMap<i32, Connection> = HashMap::with_max_entries(1024);
-
 #[map("ssl_args")]
 static mut ssl_args: HashMap<u64, SSLArgs> = HashMap::with_max_entries(1024);
 
@@ -109,7 +106,6 @@ fn do_connect(regs: Registers) -> Option<()> {
     };
 
     unsafe {
-        connections.set(&fd, &conn);
         connection_events.insert(regs.ctx, &conn);
     }
 
