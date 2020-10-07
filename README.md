@@ -1,7 +1,6 @@
-snuffy
-=======
+# snuffy
 
-Snuffy is a simple command line tool to dump the data sent and received by programs that use OpenSSL.
+Snuffy is a simple command line tool to inspect SSL/TLS connections. It currently supports [OpenSSL](https://openssl.org) and [NSS](https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS).
 
 For background info see the blog post https://confused.ai/posts/intercepting-zoom-tls-encryption-bpf-uprobes.
 
@@ -17,6 +16,7 @@ sudo apt-get -y install build-essential zlib1g-dev \
 ```
 
 On fedora run:
+
 ```sh
 yum install clang llvm llvm-devel zlib-devel kernel-devel
 export LLVM_SYS_100_PREFIX=/usr
@@ -34,18 +34,18 @@ cargo install --git https://github.com/alessandrod/snuffy snuffy
 
 Snuffy uses the `bpf()` syscall, so you need to run it as root or a user with `CAP_SYS_ADMIN` privileges.
 
-## With programs that link to OpenSSL dynamically
+## With programs that link to OpenSSL or NSS dynamically
 
-To instruments commands that link to OpenSSL dynamically, run:
+To instruments commands that link to OpenSSL or NSS dynamically, run:
 
 ```
-# snuffy --hex-dump --trace-connections --command [COMMAND]
+# snuffy --hex-dump --command [COMMAND]
 ```
 
 For example to instrument curl:
 
 ```
-# snuffy --hex-dump --trace-connections --command /usr/bin/curl # then in another terminal run: curl --http1.1 https://www.google.com
+# snuffy --hex-dump --command /usr/bin/curl # then in another terminal run: curl --http1.1 https://www.google.com
 [6:05:19] Connected to 127.0.0.53:53
 [6:05:19] Resolved www.google.com to 216.58.199.68
 [6:05:19] Connected to www.google.com:443 (216.58.199.68:443)
@@ -65,29 +65,50 @@ For example to instrument curl:
 [6:05:19] |3a207072 69766174 652c206d 61782d61| : private, max-a 00000050
 ```
 
-If you omit the `--command` option, snuffy will intercept **all** the programs that use OpenSSL.
+If you omit the `--command` option, snuffy will intercept **all** the programs that use OpenSSL or NSS.
 
-## With programs that link to OpenSSL statically
-
-If you want to instrument a program that links statically to OpenSSL and the symbols have been stripped, you need to provide a file containing the `.text` section offsets of `SSL_read` and `SSL_write`, eg:
+**NOTE**: Firefox links to NSS dynamically, but ships its own `libssl3.so` and `libnspr4.so`. To instrument firefox, you have to provide a config file pointing to those libraries, eg:
 
 ```toml
-# put this in offsets.toml
-# the offsets below are just examples, you need to provide working ones
-ssl_read = 0xBAAAAAAD
-ssl_write = 0xDECAFBAD
+[nss]
+libssl3="/usr/lib/firefox/libssl3.so"
+libnspr4="/usr/lib/firefox/libnspr4.so"
 ```
+
+## With programs that link to OpenSSL or NSS statically
+
+If you want to instrument a program that links statically to OpenSSL or NSS and the symbols have been stripped, you need to provide a configuration file containing the `.text` section offsets of the TLS functions.
+
+For example for OpenSSL put this in `config.toml`:
+
+```toml
+[openssl]
+SSL_set_fd = 0xBADDCAFE
+SSL_read = 0xBAAAAAAD
+SSL_write = 0xDECAFBAD
+```
+
+And for NSS:
+
+```toml
+[nss]
+SSL_SetURL = 0xBADDCAFE
+PR_Recv = 0xBAAAAAAD
+PR_Send = 0xDECAFBAD
+```
+
+(The offsets above are just examples, you need to provide working ones.)
 
 Then run:
 
 ```
-# snuffy --hex-dump --trace-connections --command COMMAND --offsets offsets.toml
+# snuffy --hex-dump --command COMMAND --config config.toml
 ```
 
-For example assuming `zoom-offsets.toml` contains the offsets for the zoom client:
+For example assuming `zoom-config.toml` contains valid OpenSSL offsets for the zoom client:
 
 ```
-# snuffy --hex-dump --trace-connections --command /opt/zoom/zoom --offsets zoom-offsets.toml # then start zoom
+# snuffy --hex-dump --command /opt/zoom/zoom --config zoom-config.toml # then start zoom
 [4:56:18] Connected to 127.0.0.53:53
 [4:56:18] Resolved us04web.zoom.us to 3.235.69.6
 [4:56:18] Connected to us04web.zoom.us:443 (3.235.69.6:443)

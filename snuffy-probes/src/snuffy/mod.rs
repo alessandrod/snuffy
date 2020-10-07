@@ -8,7 +8,6 @@ pub const HOST_LEN: usize = 256;
 pub struct Config {
     pub target_comm_set: usize,
     pub target_comm: [u8; COMM_LEN],
-    pub extract_fds: usize,
 }
 
 #[repr(C)]
@@ -26,15 +25,26 @@ pub struct Connection {
 
 #[repr(C)]
 pub struct SSLBuffer {
-    pub ssl_handle: usize,
-    pub fd: i32,
+    pub ssl_ctx: usize,
     pub mode: AccessMode,
     pub len: usize,
     pub chunk_len: usize,
     pub chunk: [u8; BUF_LEN],
 }
 
-#[repr(u32)]
+#[repr(C)]
+pub struct SSLHost {
+    pub ssl_ctx: usize,
+    pub host: [u8; HOST_LEN],
+}
+
+#[repr(C)]
+pub struct SSLFd {
+    pub ssl_ctx: usize,
+    pub fd: usize,
+}
+
+#[repr(u64)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum AccessMode {
     Read,

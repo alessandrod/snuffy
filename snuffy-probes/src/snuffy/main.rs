@@ -1,11 +1,12 @@
 #![no_std]
 #![no_main]
-use snuffy_probes::snuffy::{
-    AccessMode, Config, Connection, SSLBuffer, BUF_LEN, COMM_LEN, CONFIG_KEY, DNS, HOST_LEN,
-};
-use snuffy_probes::user_bindings::addrinfo;
 use redbpf_probes::helpers::gen;
 use redbpf_probes::uprobe::prelude::*;
+use snuffy_probes::snuffy::{
+    AccessMode, Config, Connection, SSLBuffer, SSLFd, SSLHost, BUF_LEN, COMM_LEN, CONFIG_KEY, DNS,
+    HOST_LEN,
+};
+use snuffy_probes::user_bindings::addrinfo;
 
 const REQ_OP_WRITE: u32 = 1;
 
@@ -16,6 +17,9 @@ static mut config: HashMap<usize, Config> = HashMap::with_max_entries(1);
 
 #[map("dns")]
 static mut dns_events: PerfMap<DNS> = PerfMap::with_max_entries(1024);
+
+#[map("ssl_fd")]
+static mut ssl_fd_events: PerfMap<SSLFd> = PerfMap::with_max_entries(1024);
 
 #[map("ssl_buffer")]
 static mut ssl_buffer_events: PerfMap<SSLBuffer> = PerfMap::with_max_entries(1024);
@@ -28,6 +32,12 @@ static mut dns_hosts: HashMap<u64, (u64, u64)> = HashMap::with_max_entries(1024)
 
 #[map("ssl_args")]
 static mut ssl_args: HashMap<u64, SSLArgs> = HashMap::with_max_entries(1024);
+
+#[map("nss_ssl_contexts")]
+static mut nss_ssl_contexts: HashMap<usize, u8> = HashMap::with_max_entries(1024);
+
+#[map("ssl_host")]
+static mut ssl_host_events: PerfMap<SSLHost> = PerfMap::with_max_entries(1024);
 
 const SYS_CONNECT: i32 = 42;
 
@@ -113,7 +123,26 @@ fn do_connect(regs: Registers) -> Option<()> {
 }
 
 #[uprobe]
-fn SSL_read(regs: Registers) {
+fn SSL_set_fd(regs: Registers) {
+    let ssl_ctx = regs.parm1() as usize;
+    let fd = regs.parm2() as i32;
+
+    if fd < 0 {
+        return;
+    }
+
+    unsafe {
+        ssl_fd_events.insert(
+            regs.ctx,
+            &SSLFd {
+                ssl_ctx,
+                fd: fd as usize,
+            },
+        )
+    }
+}
+
+fn do_read(regs: Registers) {
     let ssl = regs.parm1() as usize;
     let buf = regs.parm2() as usize;
     let len = regs.parm3() as usize;
@@ -128,26 +157,20 @@ fn SSL_read(regs: Registers) {
     }
 }
 
-#[uretprobe]
-fn SSL_read_ret(regs: Registers) {
+fn do_read_ret(regs: Registers) {
     let len = regs.rc() as i32;
+
     if len < 0 {
         return;
     }
     let args = unsafe { ssl_args.get(&bpf_get_current_pid_tgid()) };
     if let Some(SSLArgs { ssl, buf }) = args {
-        let fd = if extract_fds() {
-            ssl_rbio(*ssl).and_then(bio_fd).ok()
-        } else {
-            None
-        };
-        output_buf(regs, *ssl, fd, AccessMode::Read, *buf, len as usize);
+        output_buf(regs, *ssl, AccessMode::Read, *buf, len as usize);
         unsafe { ssl_args.delete(&bpf_get_current_pid_tgid()) };
     }
 }
 
-#[uprobe]
-fn SSL_write(regs: Registers) {
+fn do_write(regs: Registers) {
     let ssl = regs.parm1() as usize;
     let buf = regs.parm2() as usize;
     let len = regs.parm3() as i32;
@@ -158,25 +181,71 @@ fn SSL_write(regs: Registers) {
         return;
     }
 
-    let fd = if extract_fds() {
-        ssl_wbio(ssl).and_then(bio_fd).ok()
-    } else {
-        None
-    };
-    output_buf(regs, ssl, fd, AccessMode::Write, buf, len as usize);
+    output_buf(regs, ssl, AccessMode::Write, buf, len as usize);
 }
 
-fn output_buf(
-    regs: Registers,
-    ssl_handle: usize,
-    fd: Option<i32>,
-    mode: AccessMode,
-    buf_addr: usize,
-    len: usize,
-) {
+#[uprobe]
+fn SSL_read(regs: Registers) {
+    do_read(regs);
+}
+
+#[uretprobe]
+fn SSL_read_ret(regs: Registers) {
+    do_read_ret(regs);
+}
+
+#[uprobe]
+fn SSL_write(regs: Registers) {
+    do_write(regs);
+}
+
+#[uprobe]
+fn SSL_SetURL(regs: Registers) {
+    let ssl_ctx = regs.parm1() as usize;
+    let host = regs.parm2() as *const c_void;
+
+    let mut event = SSLHost {
+        ssl_ctx,
+        host: [0u8; HOST_LEN],
+    };
+
+    unsafe { bpf_probe_read_str(event.host.as_mut_ptr() as *mut _, HOST_LEN as i32, host) };
+
+    unsafe {
+        let value = 1;
+        nss_ssl_contexts.set(&ssl_ctx, &value);
+        ssl_host_events.insert(regs.ctx, &event);
+    }
+}
+
+#[uprobe]
+fn nss_read(regs: Registers) {
+    let ssl_ctx = regs.parm1() as usize;
+    if unsafe { nss_ssl_contexts.get(&ssl_ctx) }.is_some() {
+        do_read(regs);
+    }
+}
+
+#[uretprobe]
+fn nss_read_ret(regs: Registers) {
+    let len = regs.rc();
+    // 0 means connection closed
+    if len > 0 {
+        do_read_ret(regs);
+    }
+}
+
+#[uprobe]
+fn nss_write(regs: Registers) {
+    let ssl_ctx = regs.parm1() as usize;
+    if unsafe { nss_ssl_contexts.get(&ssl_ctx) }.is_some() {
+        do_write(regs);
+    }
+}
+
+fn output_buf(regs: Registers, ssl_ctx: usize, mode: AccessMode, buf_addr: usize, len: usize) {
     let mut buf = SSLBuffer {
-        ssl_handle,
-        fd: fd.unwrap_or(-1),
+        ssl_ctx,
         mode,
         len,
         chunk_len: 0,
@@ -216,18 +285,6 @@ fn output_buf(
     unsafe { ssl_buffer_events.insert(regs.ctx, &buf) };
 }
 
-fn ssl_rbio(ssl: usize) -> Result<*const c_void, i32> {
-    unsafe { bpf_probe_read((ssl + 16) as *const *const c_void) }
-}
-
-fn ssl_wbio(ssl: usize) -> Result<*const c_void, i32> {
-    unsafe { bpf_probe_read((ssl + 24) as *const *const c_void) }
-}
-
-fn bio_fd(bio: *const c_void) -> Result<i32, i32> {
-    unsafe { bpf_probe_read((bio as usize + 48) as *const i32) }
-}
-
 fn is_target_command() -> bool {
     let comm = bpf_get_current_comm();
     let key = CONFIG_KEY;
@@ -241,11 +298,4 @@ fn is_target_command() -> bool {
         cmd[..COMM_LEN] == c.target_comm
     })
     .unwrap_or(false)
-}
-
-fn extract_fds() -> bool {
-    let key = CONFIG_KEY;
-    unsafe { config.get(&key) }
-        .map(|c| c.extract_fds == 1)
-        .unwrap_or(false)
 }
