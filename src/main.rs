@@ -7,11 +7,11 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CStr;
+use std::io::{self, Write};
 use std::mem;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::os::raw::c_char;
 use std::str::FromStr;
-use std::{cmp, fs, path::Path, ptr};
+use std::{cmp, fs, path::Path, ptr, slice};
 
 use anyhow::anyhow;
 use futures::stream::StreamExt;
@@ -52,6 +52,20 @@ macro_rules! attach_uprobe {
     };
 }
 
+macro_rules! output {
+    ($comm:expr, $pid:expr, $($args:tt)*) => {
+        {
+            let mut stdout = io::stdout();
+            let comm = unsafe { CStr::from_ptr($comm.as_ptr()) }
+                        .to_str()
+                        .unwrap();
+            write!(&mut stdout, "{} {}[{}] ", now(), comm, $pid).unwrap();
+            write!(&mut stdout, $($args)*).unwrap();
+            write!(&mut stdout, "\n").unwrap();
+        }
+    };
+}
+
 fn main() -> Result<(), anyhow::Error> {
     let mut opts = Opts::from_args();
     let target_libs: HashSet<String> = if !opts.libs.is_empty() {
@@ -65,7 +79,7 @@ fn main() -> Result<(), anyhow::Error> {
         let mut loader =
             Loader::load(probe_code()).map_err(|e| anyhow!("Error loading probes: {:?}", e))?;
         let target_comm_set = opts.command.is_some();
-        let mut target_comm = [0u8; COMM_LEN];
+        let mut target_comm = [0i8; COMM_LEN];
         if let Some(command) = opts
             .command
             .as_ref()
@@ -73,7 +87,9 @@ fn main() -> Result<(), anyhow::Error> {
             .and_then(|c| c.to_str())
         {
             let len = cmp::min(command.len(), COMM_LEN);
-            target_comm[..len].copy_from_slice(&command[..len].as_bytes());
+            let cmd = command[..len].as_bytes();
+            target_comm[..len]
+                .copy_from_slice(unsafe { slice::from_raw_parts(cmd.as_ptr() as *const i8, len) });
         }
 
         let config = BPFHashMap::<usize, Config>::new(loader.map("config").unwrap()).unwrap();
@@ -149,14 +165,13 @@ fn main() -> Result<(), anyhow::Error> {
                     match name.as_str() {
                         "dns" => {
                             let event = unsafe { ptr::read(event.as_ptr() as *const DNS) };
-                            let host =
-                                unsafe { CStr::from_ptr(event.host.as_ptr() as *const c_char) }
-                                    .to_str()
-                                    .unwrap();
+                            let host = unsafe { CStr::from_ptr(event.host.as_ptr()) }
+                                .to_str()
+                                .unwrap();
                             let ip = Ipv4Addr::from(unsafe {
-                                mem::transmute::<u32, [u8; 4]>(event.addr)
+                                mem::transmute::<u32, [u8; 4]>(event.addr as u32)
                             });
-                            println!("{} Resolved {} to {}", now(), host, ip);
+                            output!(event.comm, event.pid, "Resolved {} to {}", host, ip);
                             state.record_dns(host.to_string(), vec![ip]);
                         }
                         "connection" => {
@@ -166,7 +181,12 @@ fn main() -> Result<(), anyhow::Error> {
                             });
                             let addr = SocketAddrV4::new(ip, conn.port as u16);
                             state.record_connection(conn.fd as i32, addr);
-                            println!("{} Connected to {}", now(), state.format_address(&addr));
+                            output!(
+                                conn.comm,
+                                conn.pid,
+                                "Connected to {}",
+                                state.format_address(&addr)
+                            );
                         }
                         "ssl_fd" => {
                             let event = unsafe { ptr::read(event.as_ptr() as *const SSLFd) };
@@ -174,14 +194,14 @@ fn main() -> Result<(), anyhow::Error> {
                         }
                         "ssl_host" => {
                             let event = unsafe { ptr::read(event.as_ptr() as *const SSLHost) };
-                            let host =
-                                unsafe { CStr::from_ptr(event.host.as_ptr() as *const c_char) }
-                                    .to_str()
-                                    .unwrap();
+                            let host = unsafe { CStr::from_ptr(event.host.as_ptr()) }
+                                .to_str()
+                                .unwrap();
                             state.record_ssl_host(event.ssl_ctx, host.to_string());
-                            println!(
-                                "{} SSL context 0x{:x} connected to {}",
-                                now(),
+                            output!(
+                                event.comm,
+                                event.pid,
+                                "SSL context 0x{:x} connected to {}",
                                 event.ssl_ctx,
                                 host
                             );
@@ -189,43 +209,34 @@ fn main() -> Result<(), anyhow::Error> {
                         "ssl_buffer" => {
                             let buf = unsafe { ptr::read(event.as_ptr() as *const SSLBuffer) };
                             if let Some(data) = buffers.push(&buf) {
-                                let complete = if buf.len == data.len() {
-                                    ""
-                                } else {
-                                    " (incomplete)"
-                                };
-
                                 let addr = state
                                     .lookup_ssl_fd(&buf.ssl_ctx)
                                     .and_then(|fd| state.address_by_fd(fd));
                                 let addr = if let Some(addr) = addr {
-                                    Some(state.format_address(&addr))
+                                    state.format_address(&addr)
                                 } else if let Some(host) = state.lookup_ssl_host(&buf.ssl_ctx) {
-                                    Some(host.to_string())
+                                    host.to_string()
                                 } else {
-                                    None
+                                    "".to_string()
                                 };
-                                if buf.mode == AccessMode::Read {
-                                    println!(
-                                        "{} Read {} bytes{} {}(context: 0x{:x})",
-                                        now(),
-                                        data.len(),
-                                        complete,
-                                        addr.map(|a| format!("from {} ", a))
-                                            .unwrap_or("".to_string()),
-                                        buf.ssl_ctx
-                                    );
-                                } else {
-                                    println!(
-                                        "{} Write {} bytes{} {}(context: 0x{:x})",
-                                        now(),
-                                        data.len(),
-                                        complete,
-                                        addr.map(|a| format!("to {} ", a))
-                                            .unwrap_or("".to_string()),
-                                        buf.ssl_ctx
-                                    );
-                                }
+                                output!(
+                                    buf.comm,
+                                    buf.pid,
+                                    "{} {} bytes {} {}",
+                                    if buf.mode == AccessMode::Read {
+                                        "Read"
+                                    } else {
+                                        "Write"
+                                    },
+                                    buf.len,
+                                    if buf.mode == AccessMode::Read {
+                                        "from"
+                                    } else {
+                                        "to"
+                                    },
+                                    addr
+                                );
+
                                 if opts.hex_dump {
                                     for line in hexdump_iter(&data) {
                                         println!("{} {}", now(), line);
