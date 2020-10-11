@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CStr;
 use std::io::{self, Write};
-use std::mem;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str::FromStr;
 use std::{cmp, fs, path::Path, ptr, slice};
@@ -167,16 +166,12 @@ fn main() -> Result<(), anyhow::Error> {
                             let host = unsafe { CStr::from_ptr(event.host.as_ptr()) }
                                 .to_str()
                                 .unwrap();
-                            let ip = Ipv4Addr::from(unsafe {
-                                mem::transmute::<u32, [u8; 4]>(event.addr as u32)
-                            });
+                            let ip = Ipv4Addr::from((event.addr as u32).to_ne_bytes());
                             output!(event.comm, event.pid, "Resolved {} to {}", host, ip);
                             state.record_dns(host.to_string(), vec![ip]);
                         }
                         Event::Connection(conn) => {
-                            let ip = Ipv4Addr::from(unsafe {
-                                mem::transmute::<u32, [u8; 4]>(conn.addr)
-                            });
+                            let ip = Ipv4Addr::from(conn.addr.to_ne_bytes());
                             let addr = SocketAddrV4::new(ip, conn.port as u16);
                             state.record_connection(conn.fd as i32, addr);
                             output!(
