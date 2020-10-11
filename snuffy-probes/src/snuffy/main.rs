@@ -3,7 +3,7 @@
 use redbpf_probes::helpers::gen;
 use redbpf_probes::uprobe::prelude::*;
 use snuffy_probes::snuffy::{
-    AccessMode, Config, Connection, Program, SSLBuffer, SSLFd, SSLHost, BUF_LEN, COMM_LEN,
+    AccessMode, Config, Connection, SSLBuffer, SSLFd, SSLHost, BUF_LEN, COMM_LEN,
     CONFIG_KEY, DNS, HOST_LEN,
 };
 use snuffy_probes::user_bindings::addrinfo;

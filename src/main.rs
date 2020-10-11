@@ -162,9 +162,8 @@ fn main() -> Result<(), anyhow::Error> {
         tokio::spawn(async move {
             while let Some((name, events)) = loader.events.next().await {
                 for event in events {
-                    match name.as_str() {
-                        "dns" => {
-                            let event = unsafe { ptr::read(event.as_ptr() as *const DNS) };
+                    match unsafe { Event::from_raw(&name, event) } {
+                        Event::DNS(event) => {
                             let host = unsafe { CStr::from_ptr(event.host.as_ptr()) }
                                 .to_str()
                                 .unwrap();
@@ -174,8 +173,7 @@ fn main() -> Result<(), anyhow::Error> {
                             output!(event.comm, event.pid, "Resolved {} to {}", host, ip);
                             state.record_dns(host.to_string(), vec![ip]);
                         }
-                        "connection" => {
-                            let conn = unsafe { ptr::read(event.as_ptr() as *const Connection) };
+                        Event::Connection(conn) => {
                             let ip = Ipv4Addr::from(unsafe {
                                 mem::transmute::<u32, [u8; 4]>(conn.addr)
                             });
@@ -188,12 +186,10 @@ fn main() -> Result<(), anyhow::Error> {
                                 state.format_address(&addr)
                             );
                         }
-                        "ssl_fd" => {
-                            let event = unsafe { ptr::read(event.as_ptr() as *const SSLFd) };
+                        Event::SetFd(event) => {
                             state.record_ssl_fd(event.ssl_ctx, event.fd as i32);
                         }
-                        "ssl_host" => {
-                            let event = unsafe { ptr::read(event.as_ptr() as *const SSLHost) };
+                        Event::SetHost(event) => {
                             let host = unsafe { CStr::from_ptr(event.host.as_ptr()) }
                                 .to_str()
                                 .unwrap();
@@ -206,8 +202,7 @@ fn main() -> Result<(), anyhow::Error> {
                                 host
                             );
                         }
-                        "ssl_buffer" => {
-                            let buf = unsafe { ptr::read(event.as_ptr() as *const SSLBuffer) };
+                        Event::Buffer(buf) => {
                             if let Some(data) = buffers.push(&buf) {
                                 let addr = state
                                     .lookup_ssl_fd(&buf.ssl_ctx)
@@ -244,7 +239,6 @@ fn main() -> Result<(), anyhow::Error> {
                                 }
                             }
                         }
-                        _ => panic!("unexpected event"),
                     }
                 }
             }
@@ -445,6 +439,27 @@ impl ObservedState {
             format!("{}:{} ({})", host, addr.port(), addr)
         } else {
             format!("{}", addr)
+        }
+    }
+}
+
+enum Event {
+    DNS(DNS),
+    Connection(Connection),
+    SetFd(SSLFd),
+    SetHost(SSLHost),
+    Buffer(SSLBuffer),
+}
+
+impl Event {
+    unsafe fn from_raw(ty_name: &str, raw: Box<[u8]>) -> Event {
+        match ty_name {
+            "dns" => Event::DNS(ptr::read(raw.as_ptr() as *const DNS)),
+            "connection" => Event::Connection(ptr::read(raw.as_ptr() as *const Connection)),
+            "ssl_fd" => Event::SetFd(ptr::read(raw.as_ptr() as *const SSLFd)),
+            "ssl_host" => Event::SetHost(ptr::read(raw.as_ptr() as *const SSLHost)),
+            "ssl_buffer" => Event::Buffer(ptr::read(raw.as_ptr() as *const SSLBuffer)),
+            _ => panic!("unexpected raw"),
         }
     }
 }
